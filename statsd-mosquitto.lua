@@ -14,26 +14,54 @@ local mqtt = require("mosquitto")
 local statsd = Statsd({
   --host = "stats.mysite.com" -- default: 127.0.0.1
   --port = 8888 -- default: 8125
-  namespace = "t.m.o.stats" -- default: none
+  namespace = "mosq.stats" -- default: none
 })
 
+-- how to do closures properly? no idea....
+local function delta(a, x)
+	local rval = nil
+	if x.storage then
+		rval =  a-x.storage
+	end
+	x.storage = a
+	return rval
+end
+
+local tmaps = {
+	["broker/store/messages/count"] = {f=statsd.gauge},
+	["broker/store/messages/bytes"] = {f=statsd.gauge},
+	["broker/bytes/received"] = {f=statsd.counter, pre=delta},
+	["broker/bytes/sent"] = {f=statsd.counter, pre=delta},
+	["broker/messages/received"] = {f=statsd.counter, pre=delta},
+	["broker/messages/sent"] = {f=statsd.counter, pre=delta},
+	["broker/clients/total"] = { f = statsd.gauge},
+	["broker/load/publish/received/1min"] = {f=statsd.gauge},
+	["broker/load/publish/received/5min"] = {f=statsd.gauge},
+	["broker/load/publish/received/15min"] = {f=statsd.gauge},
+	["broker/load/publish/sent/1min"] = {f=statsd.gauge},
+	["broker/load/publish/sent/5min"] = {f=statsd.gauge},
+	["broker/load/publish/sent/15min"] = {f=statsd.gauge},
+}
 local client = mqtt.new()
 
 client.ON_CONNECT = function()
         print("connected")
-        client:subscribe("$SYS/#")
+	for t,o in pairs(tmaps) do
+		print("subscribing to ", t)
+	        client:subscribe("$SYS/" .. t)
+	end
 end
 
 client.ON_MESSAGE = function(mid, topic, payload)
-	-- strip $SYS for the name
-	topic = topic:sub(5)
+	-- strip $SYS/ from the name
+	topic = topic:sub(6)
         print(topic, payload)
-	-- TODO - which is the right statsd type for which metric?
-	if topic:find("broker/clients") then
-		statsd:gauge(topic, payload)
-	end
-	if topic:find("broker/load") then
-		statsd:gauge(topic, payload)
+	local e = tmaps[topic]
+	if e then
+		local val = payload
+		if e.pre then val = e.pre(payload, e) end
+		print("publishing val", val)
+		if val then e.f(statsd, topic, val) end
 	end
 end
 
